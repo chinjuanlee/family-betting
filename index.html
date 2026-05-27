@@ -661,11 +661,14 @@ function updatePayoutPreview(marketId) {
     const { yr, nr, k } = res(market);
     const { shares } = cpmm(yr, nr, k, side, amount);
     const bets = getMarketBets(marketId);
-    const totalPool = bets.reduce((s, b) => s + b.amount, 0) + amount;
+    // Loser pool = money on the OTHER side (this is the prize pot winners split)
+    const loserPool = bets.filter(b => b.side !== side).reduce((s, b) => s + b.amount, 0);
     const existShares = bets.filter(b => b.side === side).reduce((s, b) => s + (b.shares ?? b.amount), 0);
     const totalWinShares = existShares + shares;
-    const payout = totalPool * shares / totalWinShares;
-    prev.textContent = `~${shares.toFixed(1)} shares · Est. payout if correct: ${fmt(payout)}  (${fmt(payout - amount)} profit)`;
+    // Payout = stake back + your cut of the loser pool (weighted by shares)
+    const prize  = loserPool * shares / totalWinShares;
+    const payout = amount + prize;
+    prev.textContent = `~${shares.toFixed(1)} shares · Est. payout if correct: ${fmt(payout)}  (+${fmt(prize)} profit)`;
   } else { prev.textContent = ''; }
 }
 
@@ -709,11 +712,13 @@ function resolveMarket(marketId, winner) {
   const market  = state.markets.find(m => m.id === marketId);
   if (!market)  return;
   market.resolved = winner;
-  const bets      = getMarketBets(marketId);
-  const winBets   = bets.filter(b => b.side === winner);
-  const loseBets  = bets.filter(b => b.side !== winner);
-  const totalPool = bets.reduce((s, b) => s + b.amount, 0);
-  const winShares = winBets.reduce((s, b) => s + (b.shares ?? b.amount), 0);
+  const bets     = getMarketBets(marketId);
+  const winBets  = bets.filter(b => b.side === winner);
+  const loseBets = bets.filter(b => b.side !== winner);
+
+  // Prize pot = total money bet on the losing side
+  const loserPool  = loseBets.reduce((s, b) => s + b.amount, 0);
+  const winShares  = winBets.reduce((s, b) => s + (b.shares ?? b.amount), 0);
 
   if (winShares === 0) {
     // Nobody bet on the winning side — refund everyone
@@ -722,9 +727,12 @@ function resolveMarket(marketId, winner) {
       state.balances[bet.userId] = (state.balances[bet.userId] ?? sb()) + bet.amount;
     });
   } else {
-    const payoutPerShare = totalPool / winShares;
+    // Each winner gets their stake back + their proportional cut of the loser pool
+    // (weighted by shares — early/contrarian bettors earned more shares per dollar)
+    const prizePerShare = loserPool / winShares;
     winBets.forEach(bet => {
-      bet.payout = (bet.shares ?? bet.amount) * payoutPerShare;
+      const prize = (bet.shares ?? bet.amount) * prizePerShare;
+      bet.payout  = bet.amount + prize;          // always ≥ bet amount ✓
       state.balances[bet.userId] = (state.balances[bet.userId] ?? sb()) + bet.payout;
     });
     loseBets.forEach(bet => { bet.payout = 0; });
