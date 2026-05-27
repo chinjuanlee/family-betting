@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Family Bets 🎲</title>
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d1117; --surface: #161b22; --surface2: #21262d;
+      --border: #30363d; --text: #e6edf3; --muted: #8b949e;
+      --yes: #00c853; --yes-dim: #003d1a;
+      --no: #f44336;  --no-dim:  #3d0000;
+      --accent: #58a6ff; --gold: #f0b429;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+    /* LOADING */
+    #loadingScreen {
+      position: fixed; inset: 0; background: var(--bg);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      z-index: 999; gap: 16px;
+    }
+    .spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text { color: var(--muted); font-size: 14px; }
+
+    /* NAV */
+    nav { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 60px; position: sticky; top: 0; z-index: 100; }
+    .nav-logo { font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .nav-logo span { color: var(--accent); }
+    .nav-user { display: flex; align-items: center; gap: 12px; }
+    .user-chip { background: var(--surface2); border: 1px solid var(--border); border-radius: 20px; padding: 6px 14px; font-size: 14px; cursor: pointer; transition: border-color .2s; }
+    .user-chip:hover { border-color: var(--accent); }
+    .balance-badge { background: var(--yes-dim); color: var(--yes); border-radius: 20px; padding: 6px 14px; font-size: 14px; font-weight: 600; }
+
+    /* LAYOUT */
+    .container { max-width: 960px; margin: 0 auto; padding: 32px 16px; }
+    .page-title { font-size: 28px; font-weight: 700; margin-bottom: 6px; }
+    .page-subtitle { color: var(--muted); font-size: 15px; margin-bottom: 32px; }
+
+    /* TABS */
+    .tabs { display: flex; gap: 4px; margin-bottom: 28px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+    .tab { padding: 10px 20px; border: none; background: none; color: var(--muted); font-size: 15px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .2s; white-space: nowrap; }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab:hover:not(.active) { color: var(--text); }
+
+    /* MARKET CARD */
+    .markets { display: flex; flex-direction: column; gap: 16px; }
+    .market-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 24px; transition: border-color .2s, transform .15s; }
+    .market-card:hover { border-color: #444c56; transform: translateY(-1px); }
+    .market-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .market-meta { flex: 1; }
+    .market-id { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500; letter-spacing: .5px; }
+    .market-question { font-size: 20px; font-weight: 700; line-height: 1.3; margin-bottom: 12px; }
+    .market-tags { display: flex; gap: 8px; flex-wrap: wrap; }
+    .tag { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; font-size: 12px; color: var(--muted); }
+    .resolved-badge { border-radius: 8px; padding: 4px 12px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .resolved-badge.yes-win { background: var(--yes); color: #000; }
+    .resolved-badge.no-win  { background: var(--no);  color: #fff; }
+
+    /* ODDS */
+    .odds-section { margin: 20px 0; }
+    .odds-row { display: flex; gap: 12px; margin-bottom: 10px; }
+    .odds-btn { flex: 1; padding: 14px; border-radius: 10px; border: 1.5px solid transparent; cursor: pointer; font-size: 15px; font-weight: 600; transition: all .2s; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+    .odds-btn.yes-btn { background: var(--yes-dim); border-color: var(--yes); color: var(--yes); }
+    .odds-btn.no-btn  { background: var(--no-dim);  border-color: var(--no);  color: var(--no); }
+    .odds-btn:hover { opacity: .85; transform: scale(1.02); }
+    .odds-btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+    .odds-label { font-size: 12px; opacity: .8; }
+    .odds-pct { font-size: 22px; font-weight: 800; }
+    .prob-bar-wrap { height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+    .prob-bar-fill { height: 100%; background: linear-gradient(90deg, var(--yes), var(--no)); border-radius: 3px; transition: width .5s ease; }
+    .prob-labels { display: flex; justify-content: space-between; margin-top: 6px; font-size: 12px; color: var(--muted); }
+
+    /* STATS */
+    .market-stats { display: flex; gap: 24px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+    .stat { display: flex; flex-direction: column; gap: 2px; }
+    .stat-label { font-size: 12px; color: var(--muted); }
+    .stat-value { font-size: 15px; font-weight: 600; }
+
+    /* BET SLIP */
+    .bet-slip { background: var(--surface2); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-top: 16px; display: none; }
+    .bet-slip.open { display: block; }
+    .bet-slip-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+    .bet-input { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; color: var(--text); font-size: 15px; outline: none; transition: border-color .2s; }
+    .bet-input:focus { border-color: var(--accent); }
+    .quick-amounts { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+    .quick-btn { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; color: var(--muted); font-size: 13px; cursor: pointer; transition: all .2s; }
+    .quick-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .bet-confirm { width: 100%; margin-top: 12px; padding: 11px; border-radius: 8px; border: none; font-size: 15px; font-weight: 700; cursor: pointer; transition: opacity .2s; }
+    .bet-confirm:hover { opacity: .85; }
+    .bet-confirm.yes { background: var(--yes); color: #000; }
+    .bet-confirm.no  { background: var(--no);  color: #fff; }
+    .payout-preview { font-size: 13px; color: var(--muted); margin-top: 8px; text-align: center; }
+
+    /* CHARTS TAB */
+    .charts-section { display: flex; flex-direction: column; gap: 20px; }
+    .chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 24px; }
+    .chart-card h3 { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+    .chart-card .chart-sub { font-size: 13px; color: var(--muted); margin-bottom: 20px; }
+    .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .chart-wrap { position: relative; height: 260px; }
+    .market-selector { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+    .msel-btn { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 14px; font-size: 13px; color: var(--muted); cursor: pointer; transition: all .2s; }
+    .msel-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.1); }
+    .no-data { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted); font-size: 14px; }
+
+    /* PORTFOLIO */
+    .portfolio-section { display: flex; flex-direction: column; gap: 16px; }
+    .portfolio-header { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+    .pf-stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; flex: 1; min-width: 140px; }
+    .pf-stat-card .stat-label { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+    .pf-stat-card .stat-value { font-size: 26px; font-weight: 700; }
+    .pf-stat-card .stat-value.green { color: var(--yes); }
+    .pf-stat-card .stat-value.red   { color: var(--no); }
+    .pf-stat-card .stat-value.gold  { color: var(--gold); }
+    .positions-table { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    .positions-table table { width: 100%; border-collapse: collapse; }
+    .positions-table th { background: var(--surface2); padding: 12px 16px; text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .5px; text-transform: uppercase; }
+    .positions-table td { padding: 14px 16px; font-size: 14px; border-top: 1px solid var(--border); }
+    .pos-yes { color: var(--yes); font-weight: 600; }
+    .pos-no  { color: var(--no);  font-weight: 600; }
+    .pos-won { color: var(--gold); font-weight: 700; }
+    .empty-state { text-align: center; padding: 48px; color: var(--muted); font-size: 15px; }
+    .empty-state .emoji { font-size: 40px; margin-bottom: 12px; }
+
+    /* LEADERBOARD */
+    .leaderboard { display: flex; flex-direction: column; gap: 12px; }
+    .lb-row { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; display: flex; align-items: center; gap: 16px; }
+    .lb-rank { font-size: 20px; font-weight: 800; width: 36px; color: var(--muted); }
+    .lb-rank.gold   { color: var(--gold); }
+    .lb-rank.silver { color: #adb5bd; }
+    .lb-rank.bronze { color: #cd7f32; }
+    .lb-name { flex: 1; font-size: 17px; font-weight: 600; }
+    .lb-pnl { font-size: 18px; font-weight: 700; }
+    .lb-pnl.pos { color: var(--yes); }
+    .lb-pnl.neg { color: var(--no); }
+
+    /* ADMIN */
+    .admin-section { display: flex; flex-direction: column; gap: 16px; }
+    .admin-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; }
+    .admin-card h3 { font-size: 16px; font-weight: 700; margin-bottom: 16px; }
+    .admin-market { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border); }
+    .admin-market:first-of-type { border-top: none; }
+    .admin-market-name { font-size: 15px; flex: 1; }
+    .resolve-btns { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+    .resolve-btn { padding: 7px 16px; border-radius: 7px; border: none; font-size: 13px; font-weight: 700; cursor: pointer; transition: opacity .2s; }
+    .resolve-btn:hover { opacity: .8; }
+    .resolve-btn.yes      { background: var(--yes); color: #000; }
+    .resolve-btn.no       { background: var(--no);  color: #fff; }
+    .resolve-btn.unresolve { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+
+    /* USER MODAL */
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 200; display: flex; align-items: center; justify-content: center; }
+    .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 32px; width: 380px; max-width: 95vw; }
+    .modal h2 { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+    .modal p { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+    .family-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .family-btn { background: var(--surface2); border: 1.5px solid var(--border); border-radius: 12px; padding: 14px; color: var(--text); font-size: 15px; font-weight: 600; cursor: pointer; transition: all .2s; text-align: center; }
+    .family-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .family-btn .avatar { font-size: 28px; display: block; margin-bottom: 4px; }
+
+    /* TOAST */
+    .toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 20px; font-size: 14px; z-index: 300; opacity: 0; transform: translateY(8px); transition: all .3s; pointer-events: none; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.success { border-color: var(--yes); color: var(--yes); }
+    .toast.error   { border-color: var(--no);  color: var(--no); }
+
+    .live-dot { display: inline-block; width: 7px; height: 7px; background: var(--yes); border-radius: 50%; margin-right: 5px; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    @media (max-width: 640px) {
+      nav { padding: 0 12px; }
+      .container { padding: 20px 12px; }
+      .odds-row { flex-direction: column; }
+      .chart-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="loadingScreen">
+  <div class="spinner"></div>
+  <div class="loading-text">Connecting to FamilyBets…</div>
+</div>
+
+<nav>
+  <div class="nav-logo">🎲 <span>Family</span>Bets</div>
+  <div class="nav-user">
+    <div class="balance-badge" id="balanceBadge">$1,000</div>
+    <div class="user-chip" id="userChip" onclick="openUserModal()">👤 Select User</div>
+  </div>
+</nav>
+
+<div class="modal-backdrop" id="userModal" style="display:none">
+  <div class="modal">
+    <h2>Who are you?</h2>
+    <p>Pick your name to place bets with the family.</p>
+    <div class="family-grid" id="familyGrid"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="container">
+  <div class="page-title">Family Prediction Markets</div>
+  <div class="page-subtitle"><span class="live-dot"></span>Live · Put your money where your mouth is.</div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('markets',this)">Markets</button>
+    <button class="tab"        onclick="showTab('charts',this)">📈 Charts</button>
+    <button class="tab"        onclick="showTab('portfolio',this)">My Portfolio</button>
+    <button class="tab"        onclick="showTab('leaderboard',this)">Leaderboard</button>
+    <button class="tab"        onclick="showTab('admin',this)">Admin</button>
+  </div>
+
+  <!-- MARKETS -->
+  <div id="tab-markets"><div class="markets" id="marketsList"></div></div>
+
+  <!-- CHARTS -->
+  <div id="tab-charts" style="display:none">
+    <div class="charts-section">
+
+      <!-- market selector -->
+      <div class="chart-card">
+        <h3>Odds Over Time</h3>
+        <div class="chart-sub">How the probability shifted with each bet placed</div>
+        <div class="market-selector" id="chartMarketSelector"></div>
+        <div class="chart-wrap"><canvas id="oddsChart"></canvas></div>
+      </div>
+
+      <div class="chart-grid">
+        <div class="chart-card">
+          <h3>Volume by Market</h3>
+          <div class="chart-sub">Total $ wagered on each market</div>
+          <div class="chart-wrap"><canvas id="volumeChart"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3>Family P&amp;L</h3>
+          <div class="chart-sub">Net gain / loss per person</div>
+          <div class="chart-wrap"><canvas id="pnlChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="chart-grid">
+        <div class="chart-card">
+          <h3>Bet Distribution</h3>
+          <div class="chart-sub">$ on each side for selected market</div>
+          <div class="chart-wrap"><canvas id="distChart"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3>Bet Count by Person</h3>
+          <div class="chart-sub">How many bets each family member placed</div>
+          <div class="chart-wrap"><canvas id="countChart"></canvas></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- PORTFOLIO -->
+  <div id="tab-portfolio" style="display:none">
+    <div class="portfolio-section">
+      <div class="portfolio-header" id="pfStats"></div>
+      <div class="positions-table"  id="pfTable"></div>
+    </div>
+  </div>
+
+  <!-- LEADERBOARD -->
+  <div id="tab-leaderboard" style="display:none">
+    <div class="leaderboard" id="lbList"></div>
+  </div>
+
+  <!-- ADMIN -->
+  <div id="tab-admin" style="display:none">
+    <div id="adminGate">
+      <div class="admin-card" style="max-width:360px;margin:0 auto;text-align:center">
+        <h3>Admin Access</h3>
+        <p style="color:var(--muted);font-size:14px;margin-bottom:16px">Enter the admin PIN.</p>
+        <input class="bet-input" type="password" id="adminPinInput" placeholder="PIN"
+          style="text-align:center;letter-spacing:6px;font-size:20px;margin-bottom:12px;width:100%"
+          onkeydown="if(event.key==='Enter')checkAdminPin()" />
+        <button class="bet-confirm yes" style="width:100%" onclick="checkAdminPin()">Unlock</button>
+        <p style="color:var(--muted);font-size:12px;margin-top:12px">Default PIN: <strong>1234</strong></p>
+      </div>
+    </div>
+    <div id="adminPanel" style="display:none">
+      <div class="admin-section">
+
+        <div class="admin-card">
+          <h3>Create New Market</h3>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div>
+              <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">QUESTION</label>
+              <input class="bet-input" id="newQuestion" placeholder="e.g. Will Dad retire before 2027?" style="width:100%" />
+            </div>
+            <div style="display:flex;gap:12px">
+              <div style="flex:1">
+                <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">CATEGORY</label>
+                <input class="bet-input" id="newCategory" placeholder="Family" style="width:100%" />
+              </div>
+              <div style="flex:1">
+                <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">TYPE</label>
+                <select id="newType" class="bet-input" style="width:100%;cursor:pointer" onchange="toggleCustomLabels()">
+                  <option value="yesno">Yes / No</option>
+                  <option value="custom">Custom (two names)</option>
+                </select>
+              </div>
+            </div>
+            <div id="customLabelsRow" style="display:none">
+              <div style="display:flex;gap:12px">
+                <div style="flex:1">
+                  <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">OPTION A (green)</label>
+                  <input class="bet-input" id="newLabelYes" placeholder="e.g. Chin" style="width:100%" />
+                </div>
+                <div style="flex:1">
+                  <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">OPTION B (red)</label>
+                  <input class="bet-input" id="newLabelNo" placeholder="e.g. Sofia" style="width:100%" />
+                </div>
+              </div>
+            </div>
+            <button class="bet-confirm yes" onclick="createMarket()">+ Create Market</button>
+          </div>
+        </div>
+
+        <div class="admin-card">
+          <h3>Resolve Markets</h3>
+          <div id="adminMarkets"></div>
+        </div>
+
+        <div class="admin-card" style="border-color:#3d1a1a">
+          <h3 style="color:var(--no)">Danger Zone</h3>
+          <p style="color:var(--muted);font-size:13px;margin-bottom:16px">Wipe all bets and reset everyone to $1,000. Cannot be undone.</p>
+          <button class="resolve-btn no" onclick="resetAll()">Reset All Data</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── FIREBASE ──────────────────────────────────────────────
+const firebaseConfig = {
+  apiKey: "AIzaSyA_qQPZXXSh7IFbqpthDnqoNgDoeYpOqHk",
+  authDomain: "family-betting.firebaseapp.com",
+  databaseURL: "https://family-betting-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "family-betting",
+  storageBucket: "family-betting.firebasestorage.app",
+  messagingSenderId: "831235337890",
+  appId: "1:831235337890:web:ea7c45a4d0d4ac7eed71fb",
+};
+firebase.initializeApp(firebaseConfig);
+const db   = firebase.database();
+const ROOT = db.ref('familyBets');
+
+// ── CONSTANTS ─────────────────────────────────────────────
+const FAMILY = [
+  { name:'Chin',     avatar:'👨' },
+  { name:'Sofia',    avatar:'👩' },
+  { name:'Nicholas', avatar:'🧑' },
+  { name:'Mom',      avatar:'👩‍🦳' },
+  { name:'Dad',      avatar:'👨‍🦳' },
+  { name:'Guest',    avatar:'🙂' },
+];
+const STARTING_BALANCE = 1000;
+const ADMIN_PIN = '1234';
+const DEFAULT_MARKETS = [
+  { id:1, question:'Who gets married first — Chin or Sofia?', category:'Family', yesLabel:'Chin', noLabel:'Sofia', resolved:null, createdAt:Date.now(), oddsHistory:[] },
+  { id:2, question:'Will Nicholas be incarcerated?',          category:'Drama',  yesLabel:'Yes',  noLabel:'No',    resolved:null, createdAt:Date.now(), oddsHistory:[] },
+];
+
+// ── STATE ─────────────────────────────────────────────────
+let state       = null;
+let currentUser = localStorage.getItem('familyBets_user') || null;
+let openBetSlip = null;
+let activeTab   = 'markets';
+let firstLoad   = true;
+let chartMarketId = null; // currently selected market in charts tab
+const chartInstances = {}; // Chart.js instances keyed by canvas id
+
+// ── FIREBASE SERIALISE (arrays → objects, since RTDB strips empty arrays) ──
+function serialize(s) {
+  const betsObj    = {};
+  (s.bets    || []).forEach(b => { betsObj[b.id]  = b; });
+  const marketsObj = {};
+  (s.markets || []).forEach(m => {
+    const mc = { ...m };
+    // oddsHistory: store as indexed object if non-empty
+    if (mc.oddsHistory && mc.oddsHistory.length) {
+      const oh = {};
+      mc.oddsHistory.forEach((pt, i) => { oh[i] = pt; });
+      mc.oddsHistory = oh;
+    } else {
+      mc.oddsHistory = {};
+    }
+    marketsObj[m.id] = mc;
+  });
+  return { markets: marketsObj, bets: betsObj, balances: s.balances || {} };
+}
+
+function deserialize(raw) {
+  const markets = Object.values(raw.markets || {})
+    .map(m => ({ ...m, oddsHistory: Object.values(m.oddsHistory || {}) }))
+    .sort((a, b) => a.id - b.id);
+  const bets = Object.values(raw.bets || {});
+  return { markets, bets, balances: raw.balances || {} };
+}
+
+function saveState(s) { ROOT.set(serialize(s)); }
+
+function initDB() {
+  const init = { markets: DEFAULT_MARKETS, bets: [], balances: {} };
+  FAMILY.forEach(f => { init.balances[f.name] = STARTING_BALANCE; });
+  saveState(init);
+}
+
+// ── REAL-TIME LISTENER ────────────────────────────────────
+ROOT.on('value', snap => {
+  const raw = snap.val();
+  if (!raw) { initDB(); return; }
+  state = deserialize(raw);
+  document.getElementById('loadingScreen').style.display = 'none';
+
+  if (firstLoad) {
+    firstLoad = false;
+    buildUserModal();
+    if (!currentUser) openUserModal();
+    else {
+      const f = FAMILY.find(x => x.name === currentUser);
+      if (f) document.getElementById('userChip').textContent = `${f.avatar} ${currentUser}`;
+    }
+    // default chart market
+    if (state.markets.length) chartMarketId = state.markets[0].id;
+  }
+
+  updateBalanceBadge();
+  renderAll();
+});
+
+// ── HELPERS ───────────────────────────────────────────────
+function getMarketBets(marketId) { return state.bets.filter(b => b.marketId === marketId); }
+
+function getMarketOdds(marketId) {
+  const bets     = getMarketBets(marketId);
+  const yesTotal = bets.filter(b => b.side === 'yes').reduce((s, b) => s + b.amount, 0);
+  const noTotal  = bets.filter(b => b.side === 'no' ).reduce((s, b) => s + b.amount, 0);
+  const total    = yesTotal + noTotal;
+  if (total === 0) return { yes:50, no:50, yesTotal:0, noTotal:0, total:0 };
+  return { yes: Math.round(yesTotal/total*100), no: Math.round(noTotal/total*100), yesTotal, noTotal, total };
+}
+
+function getUserBalance(u) { return state.balances[u] ?? STARTING_BALANCE; }
+
+function fmt(n) { return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits:0 }); }
+
+function showToast(msg, type='success') {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = `toast show ${type}`;
+  setTimeout(() => { t.className = 'toast'; }, 3000);
+}
+
+// ── USER MODAL ────────────────────────────────────────────
+function openUserModal() { document.getElementById('userModal').style.display = 'flex'; }
+
+function selectUser(name) {
+  currentUser = name;
+  localStorage.setItem('familyBets_user', name);
+  document.getElementById('userModal').style.display = 'none';
+  const f = FAMILY.find(x => x.name === name);
+  document.getElementById('userChip').textContent = `${f.avatar} ${name}`;
+  updateBalanceBadge();
+  renderAll();
+}
+
+function updateBalanceBadge() {
+  document.getElementById('balanceBadge').textContent =
+    currentUser && state ? fmt(getUserBalance(currentUser)) : '$1,000';
+}
+
+function buildUserModal() {
+  document.getElementById('familyGrid').innerHTML = FAMILY.map(f => `
+    <button class="family-btn" onclick="selectUser('${f.name}')">
+      <span class="avatar">${f.avatar}</span>${f.name}
+    </button>`).join('');
+}
+
+// ── TABS ──────────────────────────────────────────────────
+function showTab(name, btn) {
+  ['markets','charts','portfolio','leaderboard','admin'].forEach(t => {
+    document.getElementById(`tab-${t}`).style.display = t === name ? '' : 'none';
+  });
+  document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  activeTab = name;
+  renderAll();
+}
+
+function renderAll() {
+  if (!state) return;
+  renderMarkets();
+  if (activeTab === 'charts')      renderCharts();
+  if (activeTab === 'portfolio')   renderPortfolio();
+  if (activeTab === 'leaderboard') renderLeaderboard();
+  if (activeTab === 'admin' && document.getElementById('adminPanel').style.display !== 'none') renderAdmin();
+}
+
+// ── BET LOGIC ─────────────────────────────────────────────
+function toggleBetSlip(marketId, side) {
+  const slip = document.getElementById(`slip-${marketId}`);
+  if (!slip) return;
+  const same = openBetSlip && openBetSlip.marketId === marketId && openBetSlip.side === side;
+  document.querySelectorAll('.bet-slip').forEach(s => s.classList.remove('open'));
+  openBetSlip = null;
+  if (!same) {
+    slip.dataset.side = side;
+    slip.classList.add('open');
+    openBetSlip = { marketId, side };
+    refreshSlipUI(marketId, side);
+    updatePayoutPreview(marketId);
+  }
+}
+
+function refreshSlipUI(marketId, side) {
+  const m     = state.markets.find(m => m.id === marketId);
+  const label = side === 'yes' ? m.yesLabel : m.noLabel;
+  const title = document.getElementById(`slip-title-${marketId}`);
+  const btn   = document.getElementById(`confirmBtn-${marketId}`);
+  if (title) title.textContent = `Bet on: ${label}`;
+  if (btn)   { btn.className = `bet-confirm ${side}`; btn.textContent = `Confirm — Bet ${label}`; }
+}
+
+function updatePayoutPreview(marketId) {
+  const slip   = document.getElementById(`slip-${marketId}`);
+  if (!slip || !slip.classList.contains('open')) return;
+  const input  = slip.querySelector('input[type=number]');
+  const amount = parseFloat(input.value) || 0;
+  const side   = slip.dataset.side;
+  const odds   = getMarketOdds(marketId);
+  const prev   = slip.querySelector('.payout-preview');
+  if (amount > 0) {
+    const sidePool = (side === 'yes' ? odds.yesTotal : odds.noTotal) + amount;
+    const payout   = (amount / sidePool) * (odds.total + amount);
+    prev.textContent = `Potential payout: ${fmt(payout)}  (${fmt(payout - amount)} profit)`;
+  } else { prev.textContent = ''; }
+}
+
+function placeBet(marketId) {
+  if (!currentUser) { showToast('Select your name first!', 'error'); openUserModal(); return; }
+  const slip   = document.getElementById(`slip-${marketId}`);
+  const input  = slip.querySelector('input[type=number]');
+  const amount = parseFloat(input.value);
+  const side   = slip.dataset.side;
+  const market = state.markets.find(m => m.id === marketId);
+
+  if (!market)                  return;
+  if (market.resolved !== null) { showToast('Market already resolved.', 'error'); return; }
+  if (!amount || amount < 1)    { showToast('Minimum bet is $1.', 'error'); return; }
+  if (amount > getUserBalance(currentUser)) { showToast('Not enough balance!', 'error'); return; }
+
+  // Place bet
+  const bet = { id: Date.now(), userId: currentUser, marketId, side, amount, placedAt: Date.now(), payout: null };
+  state.bets.push(bet);
+  state.balances[currentUser] = (state.balances[currentUser] ?? STARTING_BALANCE) - amount;
+
+  // Record odds snapshot for charts AFTER this bet
+  const odds = getMarketOdds(marketId); // computed from updated state.bets
+  if (!market.oddsHistory) market.oddsHistory = [];
+  market.oddsHistory.push({ t: Date.now(), yes: odds.yes, no: odds.no, volume: odds.total, bettor: currentUser });
+
+  saveState(state);
+  input.value = '';
+  slip.classList.remove('open');
+  openBetSlip = null;
+  showToast(`Bet placed: ${fmt(amount)} on ${side === 'yes' ? market.yesLabel : market.noLabel} ✓`);
+}
+
+// ── RESOLVE ───────────────────────────────────────────────
+function resolveMarket(marketId, winner) {
+  const market  = state.markets.find(m => m.id === marketId);
+  if (!market)  return;
+  market.resolved = winner;
+  const bets    = getMarketBets(marketId);
+  const winners = bets.filter(b => b.side === winner);
+  const losers  = bets.filter(b => b.side !== winner);
+  const losePot = losers.reduce((s, b) => s + b.amount, 0);
+  const winPot  = winners.reduce((s, b) => s + b.amount, 0);
+  winners.forEach(bet => {
+    bet.payout = bet.amount + (winPot > 0 ? bet.amount / winPot : 0) * losePot;
+    state.balances[bet.userId] = (state.balances[bet.userId] ?? STARTING_BALANCE) + bet.payout;
+  });
+  losers.forEach(bet => { bet.payout = 0; });
+  saveState(state);
+  const winLabel = winner === 'yes' ? market.yesLabel : market.noLabel;
+  showToast(`Resolved: ${winLabel} wins! Payouts sent 🎉`);
+}
+
+function unresolveMarket(marketId) {
+  const market = state.markets.find(m => m.id === marketId);
+  if (!market || market.resolved === null) return;
+  market.resolved = null;
+  state.bets.filter(b => b.marketId === marketId).forEach(b => { b.payout = null; });
+  const fresh = {};
+  FAMILY.forEach(f => { fresh[f.name] = STARTING_BALANCE; });
+  state.markets.forEach(m => {
+    if (m.id === marketId || m.resolved === null) return;
+    const mBets    = state.bets.filter(b => b.marketId === m.id);
+    const mWinners = mBets.filter(b => b.side === m.resolved);
+    const mLosers  = mBets.filter(b => b.side !== m.resolved);
+    const winPot   = mWinners.reduce((s, b) => s + b.amount, 0);
+    const losePot  = mLosers.reduce((s, b) => s + b.amount, 0);
+    mWinners.forEach(bet => { bet.payout = bet.amount + (winPot > 0 ? bet.amount/winPot : 0) * losePot; });
+    mLosers.forEach(bet  => { bet.payout = 0; });
+  });
+  state.bets.forEach(bet => {
+    fresh[bet.userId] = (fresh[bet.userId] ?? STARTING_BALANCE) - bet.amount;
+    if (bet.payout > 0) fresh[bet.userId] += bet.payout;
+  });
+  state.balances = fresh;
+  saveState(state);
+  showToast('Market re-opened.');
+}
+
+// ── RENDER MARKETS ────────────────────────────────────────
+function renderMarkets() {
+  document.getElementById('marketsList').innerHTML = state.markets.map(renderMarketCard).join('');
+  if (openBetSlip) {
+    const slip = document.getElementById(`slip-${openBetSlip.marketId}`);
+    if (slip) { slip.dataset.side = openBetSlip.side; slip.classList.add('open'); refreshSlipUI(openBetSlip.marketId, openBetSlip.side); }
+  }
+}
+
+function renderMarketCard(m) {
+  const odds     = getMarketOdds(m.id);
+  const resolved = m.resolved !== null;
+  const userBets = currentUser ? state.bets.filter(b => b.marketId === m.id && b.userId === currentUser) : [];
+  const userYes  = userBets.filter(b => b.side === 'yes').reduce((s, b) => s + b.amount, 0);
+  const userNo   = userBets.filter(b => b.side === 'no' ).reduce((s, b) => s + b.amount, 0);
+  const badge    = resolved
+    ? `<div class="resolved-badge ${m.resolved}-win">✓ ${m.resolved === 'yes' ? m.yesLabel : m.noLabel} Won</div>` : '';
+
+  return `
+  <div class="market-card">
+    <div class="market-header">
+      <div class="market-meta">
+        <div class="market-id">MARKET #${m.id} · ${m.category.toUpperCase()}</div>
+        <div class="market-question">${m.question}</div>
+        <div class="market-tags">
+          ${resolved ? `<span class="tag">Resolved</span>` : `<span class="tag"><span class="live-dot" style="width:6px;height:6px;margin-right:3px"></span>Live</span>`}
+          <span class="tag">${odds.total > 0 ? fmt(odds.total)+' wagered' : 'No bets yet'}</span>
+          ${userBets.length ? `<span class="tag">You're in</span>` : ''}
+        </div>
+      </div>
+      ${badge}
+    </div>
+    <div class="odds-section">
+      <div class="odds-row">
+        <button class="odds-btn yes-btn" ${resolved?'disabled':''} onclick="toggleBetSlip(${m.id},'yes')">
+          <span class="odds-label">BET ${m.yesLabel.toUpperCase()}</span>
+          <span class="odds-pct">${odds.yes}%</span>
+        </button>
+        <button class="odds-btn no-btn" ${resolved?'disabled':''} onclick="toggleBetSlip(${m.id},'no')">
+          <span class="odds-label">BET ${m.noLabel.toUpperCase()}</span>
+          <span class="odds-pct">${odds.no}%</span>
+        </button>
+      </div>
+      <div class="prob-bar-wrap"><div class="prob-bar-fill" style="width:${odds.yes}%"></div></div>
+      <div class="prob-labels"><span>${m.yesLabel} ${odds.yes}%</span><span>${m.noLabel} ${odds.no}%</span></div>
+    </div>
+    <div class="market-stats">
+      <div class="stat"><div class="stat-label">Total Volume</div><div class="stat-value">${fmt(odds.total)}</div></div>
+      <div class="stat"><div class="stat-label">${m.yesLabel} Pool</div><div class="stat-value" style="color:var(--yes)">${fmt(odds.yesTotal)}</div></div>
+      <div class="stat"><div class="stat-label">${m.noLabel} Pool</div><div class="stat-value" style="color:var(--no)">${fmt(odds.noTotal)}</div></div>
+      ${userYes>0?`<div class="stat"><div class="stat-label">Your ${m.yesLabel}</div><div class="stat-value pos-yes">${fmt(userYes)}</div></div>`:''}
+      ${userNo >0?`<div class="stat"><div class="stat-label">Your ${m.noLabel}</div><div class="stat-value pos-no">${fmt(userNo)}</div></div>`:''}
+    </div>
+    <div class="bet-slip" id="slip-${m.id}" data-side="yes">
+      <div class="bet-slip-title" id="slip-title-${m.id}">Place your bet</div>
+      <input class="bet-input" type="number" min="1" placeholder="Amount ($)" id="betInput-${m.id}" style="width:100%"
+        oninput="updatePayoutPreview(${m.id})" onkeydown="if(event.key==='Enter')placeBet(${m.id})" />
+      <div class="quick-amounts">
+        ${[10,25,50,100,250].map(a=>`<button class="quick-btn" onclick="document.getElementById('betInput-${m.id}').value=${a};updatePayoutPreview(${m.id})">${fmt(a)}</button>`).join('')}
+      </div>
+      <div class="payout-preview"></div>
+      <button class="bet-confirm yes" id="confirmBtn-${m.id}" onclick="placeBet(${m.id})">Confirm Bet</button>
+    </div>
+  </div>`;
+}
+
+// ── CHARTS ────────────────────────────────────────────────
+Chart.defaults.color          = '#8b949e';
+Chart.defaults.borderColor    = '#30363d';
+Chart.defaults.font.family    = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+
+function destroyChart(id) {
+  if (chartInstances[id]) { chartInstances[id].destroy(); delete chartInstances[id]; }
+}
+
+function renderCharts() {
+  if (!state) return;
+  buildMarketSelector();
+  renderOddsChart();
+  renderVolumeChart();
+  renderPnlChart();
+  renderDistChart();
+  renderCountChart();
+}
+
+function buildMarketSelector() {
+  document.getElementById('chartMarketSelector').innerHTML = state.markets.map(m => `
+    <button class="msel-btn ${chartMarketId === m.id ? 'active' : ''}"
+      onclick="chartMarketId=${m.id};renderCharts()">
+      #${m.id} ${m.question.length > 40 ? m.question.slice(0,40)+'…' : m.question}
+    </button>`).join('');
+}
+
+function renderOddsChart() {
+  destroyChart('oddsChart');
+  const market = state.markets.find(m => m.id === chartMarketId);
+  const canvas = document.getElementById('oddsChart');
+  if (!market) return;
+
+  const history = market.oddsHistory || [];
+  if (history.length === 0) {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    canvas.parentElement.innerHTML = `<canvas id="oddsChart"></canvas><div class="no-data">No bets placed yet — odds history will appear here</div>`;
+    return;
+  }
+
+  // Prepend the 50/50 starting point
+  const labels    = ['Start', ...history.map((_, i) => `Bet ${i+1}`)];
+  const yesData   = [50, ...history.map(p => p.yes)];
+  const noData    = [50, ...history.map(p => p.no)];
+  const volumeData= [0,  ...history.map(p => p.volume)];
+
+  chartInstances['oddsChart'] = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: `${market.yesLabel} %`,
+          data: yesData,
+          borderColor: '#00c853',
+          backgroundColor: 'rgba(0,200,83,.1)',
+          fill: true,
+          tension: .35,
+          pointRadius: 4,
+          pointHoverRadius: 6,
+        },
+        {
+          label: `${market.noLabel} %`,
+          data: noData,
+          borderColor: '#f44336',
+          backgroundColor: 'rgba(244,67,54,.1)',
+          fill: true,
+          tension: .35,
+          pointRadius: 4,
+          pointHoverRadius: 6,
+        },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#e6edf3' } },
+        tooltip: {
+          callbacks: {
+            afterBody: (items) => {
+              const i = items[0].dataIndex;
+              if (i === 0) return '';
+              const pt = history[i - 1];
+              return [`Volume: ${fmt(pt.volume)}`, pt.bettor ? `Bettor: ${pt.bettor}` : ''];
+            }
+          }
+        }
+      },
+      scales: {
+        y: { min: 0, max: 100, ticks: { callback: v => v + '%' }, grid: { color: '#21262d' } },
+        x: { grid: { color: '#21262d' } },
+      },
+    },
+  });
+}
+
+function renderVolumeChart() {
+  destroyChart('volumeChart');
+  const labels = state.markets.map(m => `#${m.id}`);
+  const yesVols= state.markets.map(m => getMarketOdds(m.id).yesTotal);
+  const noVols = state.markets.map(m => getMarketOdds(m.id).noTotal);
+
+  chartInstances['volumeChart'] = new Chart(document.getElementById('volumeChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'YES pool', data: yesVols, backgroundColor: 'rgba(0,200,83,.7)',  borderRadius: 4 },
+        { label: 'NO pool',  data: noVols,  backgroundColor: 'rgba(244,67,54,.7)', borderRadius: 4 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#e6edf3' } },
+        tooltip: { callbacks: { label: ctx => ` ${fmt(ctx.raw)}` } },
+      },
+      scales: {
+        x: { stacked: true, grid: { color: '#21262d' } },
+        y: { stacked: true, grid: { color: '#21262d' }, ticks: { callback: v => fmt(v) } },
+      },
+    },
+  });
+}
+
+function renderPnlChart() {
+  destroyChart('pnlChart');
+  const entries = FAMILY.map(f => ({ name: f.name, pnl: getUserBalance(f.name) - STARTING_BALANCE }));
+  const colors  = entries.map(e => e.pnl >= 0 ? 'rgba(0,200,83,.75)' : 'rgba(244,67,54,.75)');
+
+  chartInstances['pnlChart'] = new Chart(document.getElementById('pnlChart'), {
+    type: 'bar',
+    data: {
+      labels: entries.map(e => e.name),
+      datasets: [{ label: 'P&L', data: entries.map(e => e.pnl), backgroundColor: colors, borderRadius: 6 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.raw >= 0 ? '+' : ''}${fmt(ctx.raw)}` } },
+      },
+      scales: {
+        x: { grid: { color: '#21262d' } },
+        y: { grid: { color: '#21262d' }, ticks: { callback: v => fmt(v) } },
+      },
+    },
+  });
+}
+
+function renderDistChart() {
+  destroyChart('distChart');
+  const market = state.markets.find(m => m.id === chartMarketId);
+  if (!market) return;
+  const odds = getMarketOdds(market.id);
+
+  if (odds.total === 0) {
+    const ctx = document.getElementById('distChart').getContext('2d');
+    ctx.clearRect(0, 0, 999, 999);
+    return;
+  }
+
+  chartInstances['distChart'] = new Chart(document.getElementById('distChart'), {
+    type: 'doughnut',
+    data: {
+      labels: [market.yesLabel, market.noLabel],
+      datasets: [{
+        data: [odds.yesTotal, odds.noTotal],
+        backgroundColor: ['rgba(0,200,83,.8)', 'rgba(244,67,54,.8)'],
+        borderColor: ['#00c853', '#f44336'],
+        borderWidth: 2,
+        hoverOffset: 8,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#e6edf3' } },
+        tooltip: { callbacks: { label: ctx => ` ${fmt(ctx.raw)} (${ctx.parsed}%)` } },
+      },
+      cutout: '60%',
+    },
+  });
+}
+
+function renderCountChart() {
+  destroyChart('countChart');
+  const counts = FAMILY.map(f => state.bets.filter(b => b.userId === f.name).length);
+  const colors = ['#58a6ff','#00c853','#f0b429','#f44336','#bc8cf2','#8b949e'];
+
+  chartInstances['countChart'] = new Chart(document.getElementById('countChart'), {
+    type: 'bar',
+    data: {
+      labels: FAMILY.map(f => f.name),
+      datasets: [{ label: 'Bets placed', data: counts, backgroundColor: colors, borderRadius: 6 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: '#21262d' } },
+        y: { grid: { color: '#21262d' }, ticks: { stepSize: 1 } },
+      },
+    },
+  });
+}
+
+// ── PORTFOLIO ─────────────────────────────────────────────
+function renderPortfolio() {
+  if (!currentUser) {
+    document.getElementById('pfStats').innerHTML = '<p style="color:var(--muted)">Select your name to see your portfolio.</p>';
+    document.getElementById('pfTable').innerHTML = '';
+    return;
+  }
+  const myBets   = state.bets.filter(b => b.userId === currentUser);
+  const spent    = myBets.reduce((s, b) => s + b.amount, 0);
+  const settled  = myBets.filter(b => b.payout !== null);
+  const returned = settled.reduce((s, b) => s + b.payout, 0);
+  const pnl      = returned - settled.reduce((s, b) => s + b.amount, 0);
+
+  document.getElementById('pfStats').innerHTML = `
+    <div class="pf-stat-card"><div class="stat-label">Balance</div><div class="stat-value gold">${fmt(getUserBalance(currentUser))}</div></div>
+    <div class="pf-stat-card"><div class="stat-label">Total Wagered</div><div class="stat-value">${fmt(spent)}</div></div>
+    <div class="pf-stat-card"><div class="stat-label">P&L (Settled)</div><div class="stat-value ${pnl>=0?'green':'red'}">${pnl>=0?'+':''}${fmt(pnl)}</div></div>`;
+
+  if (!myBets.length) {
+    document.getElementById('pfTable').innerHTML = `<div class="empty-state"><div class="emoji">🤷</div>No bets yet. Go place some!</div>`;
+    return;
+  }
+
+  document.getElementById('pfTable').innerHTML = `
+    <table>
+      <thead><tr><th>Market</th><th>Side</th><th>Wagered</th><th>Result</th></tr></thead>
+      <tbody>${myBets.map(b => {
+        const m     = state.markets.find(m => m.id === b.marketId);
+        const label = b.side === 'yes' ? m.yesLabel : m.noLabel;
+        const cls   = b.side === 'yes' ? 'pos-yes' : 'pos-no';
+        const status = b.payout === null ? '<span style="color:var(--muted)">Pending</span>'
+          : b.payout > 0 ? `<span class="pos-won">Won ${fmt(b.payout)}</span>`
+          : `<span class="pos-no">Lost ${fmt(b.amount)}</span>`;
+        return `<tr><td>${m.question}</td><td class="${cls}">${label}</td><td>${fmt(b.amount)}</td><td>${status}</td></tr>`;
+      }).join('')}</tbody>
+    </table>`;
+}
+
+// ── LEADERBOARD ───────────────────────────────────────────
+function renderLeaderboard() {
+  const entries = FAMILY.map(f => ({ ...f, balance: getUserBalance(f.name), pnl: getUserBalance(f.name) - STARTING_BALANCE }))
+    .sort((a, b) => b.balance - a.balance);
+  const rankCls   = ['gold','silver','bronze'];
+  const rankEmoji = ['🥇','🥈','🥉'];
+  document.getElementById('lbList').innerHTML = entries.map((e, i) => `
+    <div class="lb-row">
+      <div class="lb-rank ${rankCls[i]||''}">${rankEmoji[i]||i+1}</div>
+      <div class="lb-name">${e.avatar} ${e.name}</div>
+      <div style="color:var(--muted);font-size:13px">${fmt(e.balance)}</div>
+      <div class="lb-pnl ${e.pnl>=0?'pos':'neg'}">${e.pnl>=0?'+':''}${fmt(e.pnl)}</div>
+    </div>`).join('');
+}
+
+// ── ADMIN ─────────────────────────────────────────────────
+function checkAdminPin() {
+  if (document.getElementById('adminPinInput').value === ADMIN_PIN) {
+    document.getElementById('adminGate').style.display  = 'none';
+    document.getElementById('adminPanel').style.display = '';
+    renderAdmin();
+  } else {
+    showToast('Wrong PIN!', 'error');
+    document.getElementById('adminPinInput').value = '';
+  }
+}
+
+function toggleCustomLabels() {
+  document.getElementById('customLabelsRow').style.display =
+    document.getElementById('newType').value === 'custom' ? '' : 'none';
+}
+
+function createMarket() {
+  const question = document.getElementById('newQuestion').value.trim();
+  const category = document.getElementById('newCategory').value.trim() || 'Family';
+  const type     = document.getElementById('newType').value;
+  let yesLabel = 'Yes', noLabel = 'No';
+  if (!question) { showToast('Enter a question.', 'error'); return; }
+  if (type === 'custom') {
+    yesLabel = document.getElementById('newLabelYes').value.trim();
+    noLabel  = document.getElementById('newLabelNo').value.trim();
+    if (!yesLabel || !noLabel) { showToast('Enter both option labels.', 'error'); return; }
+  }
+  const newId = Math.max(0, ...state.markets.map(m => m.id)) + 1;
+  state.markets.push({ id:newId, question, category, yesLabel, noLabel, resolved:null, createdAt:Date.now(), oddsHistory:[] });
+  saveState(state);
+  document.getElementById('newQuestion').value = '';
+  document.getElementById('newCategory').value = '';
+  document.getElementById('newLabelYes').value = '';
+  document.getElementById('newLabelNo').value  = '';
+  document.getElementById('newType').value = 'yesno';
+  toggleCustomLabels();
+  showToast(`Market #${newId} created! ✓`);
+}
+
+function resetAll() {
+  if (!confirm('Reset EVERYTHING? All bets deleted, balances back to $1,000.')) return;
+  const fresh = { markets: DEFAULT_MARKETS.map(m => ({ ...m, resolved:null, oddsHistory:[] })), bets:[], balances:{} };
+  FAMILY.forEach(f => { fresh.balances[f.name] = STARTING_BALANCE; });
+  state = fresh;
+  saveState(state);
+  showToast('All data reset. Fresh start!');
+}
+
+function renderAdmin() {
+  const el = document.getElementById('adminMarkets');
+  if (!el || !state) return;
+  el.innerHTML = state.markets.map(m => `
+    <div class="admin-market">
+      <div class="admin-market-name">#${m.id}: ${m.question}</div>
+      <div class="resolve-btns">
+        ${m.resolved === null ? `
+          <button class="resolve-btn yes" onclick="resolveMarket(${m.id},'yes')">${m.yesLabel} Wins</button>
+          <button class="resolve-btn no"  onclick="resolveMarket(${m.id},'no')">${m.noLabel} Wins</button>
+        ` : `
+          <span style="color:var(--muted);font-size:13px;align-self:center">Resolved: ${m.resolved==='yes'?m.yesLabel:m.noLabel}</span>
+          <button class="resolve-btn unresolve" onclick="unresolveMarket(${m.id})">Re-open</button>
+        `}
+      </div>
+    </div>`).join('');
+}
+</script>
+</body>
+</html>
