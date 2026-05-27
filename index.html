@@ -685,6 +685,15 @@ function placeBet(marketId) {
   if (!amount || amount < 1)    { showToast('Minimum bet is $1.', 'error'); return; }
   if (amount > getUserBalance(currentUser)) { showToast('Not enough balance!', 'error'); return; }
 
+  // ── Block opposite-side bets (no self-hedging) ──
+  const oppSide  = side === 'yes' ? 'no' : 'yes';
+  const hasOpp   = state.bets.some(b => b.marketId === marketId && b.userId === currentUser && b.side === oppSide);
+  if (hasOpp) {
+    const oppLabel = oppSide === 'yes' ? market.yesLabel : market.noLabel;
+    showToast(`You already have a ${oppLabel} position — pick one side per market.`, 'error');
+    return;
+  }
+
   // ── CPMM: calculate shares and update reserves ──
   const { yr, nr, k } = res(market);
   const { shares, yr2, nr2 } = cpmm(yr, nr, k, side, amount);
@@ -793,13 +802,17 @@ function renderMarketCard(m) {
     </div>
     <div class="odds-section">
       <div class="odds-row">
-        <button class="odds-btn yes-btn" ${resolved?'disabled':''} onclick="toggleBetSlip(${m.id},'yes')">
+        <button class="odds-btn yes-btn" ${resolved || userNo>0 ? 'disabled' : ''} onclick="toggleBetSlip(${m.id},'yes')"
+          title="${userNo>0 ? 'You already hold a '+m.noLabel+' position' : ''}">
           <span class="odds-label">BET ${m.yesLabel.toUpperCase()}</span>
           <span class="odds-pct">${odds.yes}%</span>
+          ${userNo>0 ? '<span style="font-size:10px;opacity:.6">locked</span>' : ''}
         </button>
-        <button class="odds-btn no-btn" ${resolved?'disabled':''} onclick="toggleBetSlip(${m.id},'no')">
+        <button class="odds-btn no-btn" ${resolved || userYes>0 ? 'disabled' : ''} onclick="toggleBetSlip(${m.id},'no')"
+          title="${userYes>0 ? 'You already hold a '+m.yesLabel+' position' : ''}">
           <span class="odds-label">BET ${m.noLabel.toUpperCase()}</span>
           <span class="odds-pct">${odds.no}%</span>
+          ${userYes>0 ? '<span style="font-size:10px;opacity:.6">locked</span>' : ''}
         </button>
       </div>
       <div class="prob-bar-wrap"><div class="prob-bar-fill" style="width:${odds.yes}%"></div></div>
