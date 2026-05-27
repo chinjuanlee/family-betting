@@ -203,6 +203,16 @@
     <h2>Who are you?</h2>
     <p>Pick your name to place bets with the family.</p>
     <div class="family-grid" id="familyGrid"></div>
+    <div id="guestRegForm" style="display:none;margin-top:16px">
+      <input class="bet-input" id="guestNameInput" placeholder="Your name"
+        style="width:100%;margin-bottom:10px"
+        onkeydown="if(event.key==='Enter')submitGuestReg()" />
+      <div style="display:flex;gap:8px">
+        <button class="bet-confirm" onclick="hideGuestReg()"
+          style="flex:1;background:var(--surface2);color:var(--muted);border:1px solid var(--border)">Cancel</button>
+        <button class="bet-confirm yes" style="flex:1" onclick="submitGuestReg()">Join</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -367,7 +377,8 @@ const FAMILY = [
   { name:'Nicholas', avatar:'🧑' },
   { name:'Mom',      avatar:'👩‍🦳' },
   { name:'Dad',      avatar:'👨‍🦳' },
-  { name:'Guest',    avatar:'🙂' },
+  { name:'Juan',     avatar:'👦' },
+  { name:'Hao',      avatar:'👦' },
 ];
 const STARTING_BALANCE = 1000;
 const ADMIN_PIN = '1234';
@@ -402,7 +413,7 @@ function serialize(s) {
     }
     marketsObj[m.id] = mc;
   });
-  return { markets: marketsObj, bets: betsObj, balances: s.balances || {} };
+  return { markets: marketsObj, bets: betsObj, balances: s.balances || {}, users: s.users || {} };
 }
 
 function deserialize(raw) {
@@ -410,15 +421,23 @@ function deserialize(raw) {
     .map(m => ({ ...m, oddsHistory: Object.values(m.oddsHistory || {}) }))
     .sort((a, b) => a.id - b.id);
   const bets = Object.values(raw.bets || {});
-  return { markets, bets, balances: raw.balances || {} };
+  return { markets, bets, balances: raw.balances || {}, users: raw.users || {} };
 }
 
 function saveState(s) { ROOT.set(serialize(s)); }
 
 function initDB() {
-  const init = { markets: DEFAULT_MARKETS, bets: [], balances: {} };
-  FAMILY.forEach(f => { init.balances[f.name] = STARTING_BALANCE; });
+  const init = { markets: DEFAULT_MARKETS, bets: [], balances: {}, users: {} };
+  FAMILY.forEach(f => {
+    init.balances[f.name] = STARTING_BALANCE;
+    init.users[f.name] = { name: f.name, avatar: f.avatar, type: 'family' };
+  });
   saveState(init);
+}
+
+function getUsers() {
+  if (state && state.users && Object.keys(state.users).length) return Object.values(state.users);
+  return FAMILY;
 }
 
 // ── REAL-TIME LISTENER ────────────────────────────────────
@@ -430,11 +449,16 @@ ROOT.on('value', snap => {
 
   if (firstLoad) {
     firstLoad = false;
+    // Seed users into Firebase if missing (e.g. first load from old data)
+    if (!Object.keys(state.users).length) {
+      FAMILY.forEach(f => { state.users[f.name] = { name: f.name, avatar: f.avatar, type: 'family' }; });
+      saveState(state);
+    }
     buildUserModal();
     if (!currentUser) openUserModal();
     else {
-      const f = FAMILY.find(x => x.name === currentUser);
-      if (f) document.getElementById('userChip').textContent = `${f.avatar} ${currentUser}`;
+      const u = state.users[currentUser];
+      if (u) document.getElementById('userChip').textContent = `${u.avatar} ${currentUser}`;
     }
     // default chart market
     if (state.markets.length) chartMarketId = state.markets[0].id;
@@ -473,8 +497,9 @@ function selectUser(name) {
   currentUser = name;
   localStorage.setItem('familyBets_user', name);
   document.getElementById('userModal').style.display = 'none';
-  const f = FAMILY.find(x => x.name === name);
-  document.getElementById('userChip').textContent = `${f.avatar} ${name}`;
+  hideGuestReg();
+  const u = (state && state.users[name]) || FAMILY.find(x => x.name === name) || { avatar: '🙂' };
+  document.getElementById('userChip').textContent = `${u.avatar} ${name}`;
   updateBalanceBadge();
   renderAll();
 }
@@ -485,10 +510,40 @@ function updateBalanceBadge() {
 }
 
 function buildUserModal() {
-  document.getElementById('familyGrid').innerHTML = FAMILY.map(f => `
-    <button class="family-btn" onclick="selectUser('${f.name}')">
-      <span class="avatar">${f.avatar}</span>${f.name}
-    </button>`).join('');
+  const users = getUsers();
+  const family = users.filter(u => u.type === 'family');
+  const guests = users.filter(u => u.type === 'guest');
+  document.getElementById('familyGrid').innerHTML =
+    [...family, ...guests].map(f => `
+      <button class="family-btn" onclick="selectUser('${f.name}')">
+        <span class="avatar">${f.avatar}</span>${f.name}
+      </button>`).join('') +
+    `<button class="family-btn" onclick="showGuestReg()" style="border-style:dashed">
+      <span class="avatar">✚</span>Join as Guest
+    </button>`;
+}
+
+function showGuestReg() {
+  document.getElementById('guestRegForm').style.display = '';
+  document.getElementById('guestNameInput').focus();
+}
+
+function hideGuestReg() {
+  const f = document.getElementById('guestRegForm');
+  if (f) { f.style.display = 'none'; document.getElementById('guestNameInput').value = ''; }
+}
+
+function submitGuestReg() {
+  const raw  = document.getElementById('guestNameInput').value.trim();
+  if (!raw) { showToast('Enter your name.', 'error'); return; }
+  const name = raw.charAt(0).toUpperCase() + raw.slice(1);
+  if (state.users[name]) { selectUser(name); return; }
+  state.users[name] = { name, avatar: '🙂', type: 'guest' };
+  if (!(name in state.balances)) state.balances[name] = STARTING_BALANCE;
+  saveState(state);
+  buildUserModal();
+  selectUser(name);
+  showToast(`Welcome, ${name}! You start with ${fmt(STARTING_BALANCE)}.`);
 }
 
 // ── TABS ──────────────────────────────────────────────────
@@ -607,7 +662,7 @@ function unresolveMarket(marketId) {
   market.resolved = null;
   state.bets.filter(b => b.marketId === marketId).forEach(b => { b.payout = null; });
   const fresh = {};
-  FAMILY.forEach(f => { fresh[f.name] = STARTING_BALANCE; });
+  getUsers().forEach(f => { fresh[f.name] = STARTING_BALANCE; });
   state.markets.forEach(m => {
     if (m.id === marketId || m.resolved === null) return;
     const mBets    = state.bets.filter(b => b.marketId === m.id);
@@ -822,7 +877,7 @@ function renderVolumeChart() {
 
 function renderPnlChart() {
   destroyChart('pnlChart');
-  const entries = FAMILY.map(f => ({ name: f.name, pnl: getUserBalance(f.name) - STARTING_BALANCE }));
+  const entries = getUsers().map(f => ({ name: f.name, pnl: getUserBalance(f.name) - STARTING_BALANCE }));
   const colors  = entries.map(e => e.pnl >= 0 ? 'rgba(0,200,83,.75)' : 'rgba(244,67,54,.75)');
 
   chartInstances['pnlChart'] = new Chart(document.getElementById('pnlChart'), {
@@ -882,13 +937,14 @@ function renderDistChart() {
 
 function renderCountChart() {
   destroyChart('countChart');
-  const counts = FAMILY.map(f => state.bets.filter(b => b.userId === f.name).length);
-  const colors = ['#58a6ff','#00c853','#f0b429','#f44336','#bc8cf2','#8b949e'];
+  const allUsers = getUsers();
+  const counts = allUsers.map(f => state.bets.filter(b => b.userId === f.name).length);
+  const colors = ['#58a6ff','#00c853','#f0b429','#f44336','#bc8cf2','#8b949e','#ff9f43','#ee5a24'];
 
   chartInstances['countChart'] = new Chart(document.getElementById('countChart'), {
     type: 'bar',
     data: {
-      labels: FAMILY.map(f => f.name),
+      labels: allUsers.map(f => f.name),
       datasets: [{ label: 'Bets placed', data: counts, backgroundColor: colors, borderRadius: 6 }],
     },
     options: {
@@ -942,7 +998,7 @@ function renderPortfolio() {
 
 // ── LEADERBOARD ───────────────────────────────────────────
 function renderLeaderboard() {
-  const entries = FAMILY.map(f => ({ ...f, balance: getUserBalance(f.name), pnl: getUserBalance(f.name) - STARTING_BALANCE }))
+  const entries = getUsers().map(f => ({ ...f, balance: getUserBalance(f.name), pnl: getUserBalance(f.name) - STARTING_BALANCE }))
     .sort((a, b) => b.balance - a.balance);
   const rankCls   = ['gold','silver','bronze'];
   const rankEmoji = ['🥇','🥈','🥉'];
@@ -997,8 +1053,8 @@ function createMarket() {
 
 function resetAll() {
   if (!confirm('Reset EVERYTHING? All bets deleted, balances back to $1,000.')) return;
-  const fresh = { markets: DEFAULT_MARKETS.map(m => ({ ...m, resolved:null, oddsHistory:[] })), bets:[], balances:{} };
-  FAMILY.forEach(f => { fresh.balances[f.name] = STARTING_BALANCE; });
+  const fresh = { markets: DEFAULT_MARKETS.map(m => ({ ...m, resolved:null, oddsHistory:[] })), bets:[], balances:{}, users: state.users || {} };
+  getUsers().forEach(f => { fresh.balances[f.name] = STARTING_BALANCE; });
   state = fresh;
   saveState(state);
   showToast('All data reset. Fresh start!');
