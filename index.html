@@ -1060,22 +1060,69 @@ function resetAll() {
   showToast('All data reset. Fresh start!');
 }
 
+let editingMarketId = null;
+
 function renderAdmin() {
   const el = document.getElementById('adminMarkets');
   if (!el || !state) return;
-  el.innerHTML = state.markets.map(m => `
-    <div class="admin-market">
-      <div class="admin-market-name">#${m.id}: ${m.question}</div>
-      <div class="resolve-btns">
-        ${m.resolved === null ? `
-          <button class="resolve-btn yes" onclick="resolveMarket(${m.id},'yes')">${m.yesLabel} Wins</button>
-          <button class="resolve-btn no"  onclick="resolveMarket(${m.id},'no')">${m.noLabel} Wins</button>
-        ` : `
-          <span style="color:var(--muted);font-size:13px;align-self:center">Resolved: ${m.resolved==='yes'?m.yesLabel:m.noLabel}</span>
-          <button class="resolve-btn unresolve" onclick="unresolveMarket(${m.id})">Re-open</button>
-        `}
-      </div>
-    </div>`).join('');
+  el.innerHTML = state.markets.map(m => {
+    const editing = editingMarketId === m.id;
+    return `
+    <div class="admin-market" style="${editing ? 'flex-direction:column;align-items:stretch' : ''}">
+      ${editing ? `
+        <div style="margin-bottom:8px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">MARKET #${m.id} — EDIT QUESTION</label>
+          <input class="bet-input" id="edit-title-${m.id}"
+            value="${m.question.replace(/"/g, '&quot;')}"
+            style="width:100%"
+            onkeydown="if(event.key==='Enter')saveMarketEdit(${m.id});else if(event.key==='Escape')cancelMarketEdit()" />
+        </div>
+        <div class="resolve-btns" style="justify-content:flex-end">
+          <button class="resolve-btn unresolve" onclick="cancelMarketEdit()">Cancel</button>
+          <button class="resolve-btn yes" onclick="saveMarketEdit(${m.id})">Save</button>
+        </div>
+      ` : `
+        <div class="admin-market-name">#${m.id}: ${m.question}</div>
+        <div class="resolve-btns">
+          <button class="resolve-btn unresolve" onclick="startEditMarket(${m.id})" title="Edit title">✏️</button>
+          ${m.resolved === null ? `
+            <button class="resolve-btn yes" onclick="resolveMarket(${m.id},'yes')">${m.yesLabel} Wins</button>
+            <button class="resolve-btn no"  onclick="resolveMarket(${m.id},'no')">${m.noLabel} Wins</button>
+          ` : `
+            <span style="color:var(--muted);font-size:13px;align-self:center">Resolved: ${m.resolved==='yes'?m.yesLabel:m.noLabel}</span>
+            <button class="resolve-btn unresolve" onclick="unresolveMarket(${m.id})">Re-open</button>
+          `}
+        </div>
+      `}
+    </div>`;
+  }).join('');
+
+  if (editingMarketId !== null) {
+    const inp = document.getElementById(`edit-title-${editingMarketId}`);
+    if (inp) { inp.focus(); inp.select(); }
+  }
+}
+
+function startEditMarket(id) {
+  editingMarketId = id;
+  renderAdmin();
+}
+
+function cancelMarketEdit() {
+  editingMarketId = null;
+  renderAdmin();
+}
+
+function saveMarketEdit(id) {
+  const inp = document.getElementById(`edit-title-${id}`);
+  if (!inp) return;
+  const q = inp.value.trim();
+  if (!q) { showToast('Question cannot be empty.', 'error'); return; }
+  const market = state.markets.find(m => m.id === id);
+  if (market) market.question = q;
+  editingMarketId = null;
+  saveState(state);
+  showToast('Market title updated ✓');
 }
 </script>
 </body>
