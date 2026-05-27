@@ -523,11 +523,30 @@ function cpmm(yr, nr, k, side, amount) {
   else                { const yr2 = yr + amount; return { shares: nr - k/yr2, yr2, nr2: k/yr2 }; }
 }
 
+// Cash received when selling `sharesToSell` of `side` back to the AMM pool
+function calcSell(market, side, sharesToSell) {
+  const { yr, nr, k } = res(market);
+  if (side === 'yes') {
+    const yr2 = yr + sharesToSell;          // return YES shares → yesReserve grows
+    const nr2 = k / yr2;                    // noReserve shrinks; difference = cash out
+    return { cashOut: Math.max(0, nr - nr2), yr2, nr2 };
+  } else {
+    const nr2 = nr + sharesToSell;
+    const yr2 = k / nr2;
+    return { cashOut: Math.max(0, yr - yr2), yr2, nr2 };
+  }
+}
+
+// Effective (unsold) shares and staked amount for a single bet
+function effShares(bet) { return (bet.shares ?? bet.amount) - (bet.soldShares ?? 0); }
+function effAmount(bet) { return bet.amount - (bet.soldAmount ?? 0); }
+
 function getMarketOdds(marketId) {
   const market  = state.markets.find(m => m.id === marketId);
   const bets    = getMarketBets(marketId);
-  const yesTotal = bets.filter(b => b.side === 'yes').reduce((s, b) => s + b.amount, 0);
-  const noTotal  = bets.filter(b => b.side === 'no' ).reduce((s, b) => s + b.amount, 0);
+  // Use effective (post-sell) amounts so volume reflects live exposure, not original bets
+  const yesTotal = bets.filter(b => b.side === 'yes').reduce((s, b) => s + effAmount(b), 0);
+  const noTotal  = bets.filter(b => b.side === 'no' ).reduce((s, b) => s + effAmount(b), 0);
   const total    = yesTotal + noTotal;
   if (!market)   return { yes:50, no:50, yesTotal:0, noTotal:0, total:0 };
   const { yr, nr } = res(market);
@@ -661,9 +680,9 @@ function updatePayoutPreview(marketId) {
     const { yr, nr, k } = res(market);
     const { shares } = cpmm(yr, nr, k, side, amount);
     const bets = getMarketBets(marketId);
-    // Loser pool = money on the OTHER side (this is the prize pot winners split)
-    const loserPool = bets.filter(b => b.side !== side).reduce((s, b) => s + b.amount, 0);
-    const existShares = bets.filter(b => b.side === side).reduce((s, b) => s + (b.shares ?? b.amount), 0);
+    // Loser pool = effective money on the OTHER side (prizes come from here)
+    const loserPool = bets.filter(b => b.side !== side).reduce((s, b) => s + effAmount(b), 0);
+    const existShares = bets.filter(b => b.side === side).reduce((s, b) => s + effShares(b), 0);
     const totalWinShares = existShares + shares;
     // Payout = stake back + your cut of the loser pool (weighted by shares)
     const prize  = loserPool * shares / totalWinShares;
@@ -716,6 +735,80 @@ function placeBet(marketId) {
   showToast(`Bet placed: ${fmt(amount)} on ${side === 'yes' ? market.yesLabel : market.noLabel} ✓`);
 }
 
+// ── SELL POSITION ─────────────────────────────────────────
+function toggleSellSlip(marketId) {
+  const slip = document.getElementById(`sell-slip-${marketId}`);
+  if (!slip) return;
+  const opening = slip.style.display === 'none';
+  // Close any open bet slip
+  document.querySelectorAll('.bet-slip').forEach(s => s.classList.remove('open'));
+  openBetSlip = null;
+  slip.style.display = opening ? '' : 'none';
+  if (opening) updateSellPreview(marketId);
+}
+
+function updateSellPreview(marketId) {
+  const prev     = document.getElementById(`sell-preview-${marketId}`);
+  const pctInput = document.getElementById(`sellPct-${marketId}`);
+  if (!prev || !pctInput || !currentUser) return;
+  const pct    = parseFloat(pctInput.value) || 0;
+  const market = state.markets.find(m => m.id === marketId);
+  if (!pct || !market) { prev.textContent = ''; return; }
+
+  const userBets       = state.bets.filter(b => b.marketId === marketId && b.userId === currentUser && b.payout === null);
+  const totalEffShares = userBets.reduce((s, b) => s + effShares(b), 0);
+  const totalEffAmount = userBets.reduce((s, b) => s + effAmount(b), 0);
+  if (!userBets.length || totalEffShares <= 0) { prev.textContent = ''; return; }
+
+  const side         = userBets[0].side;
+  const sharesToSell = totalEffShares * (pct / 100);
+  const { cashOut }  = calcSell(market, side, sharesToSell);
+  const costBasis    = totalEffAmount * (pct / 100);
+  const pl           = cashOut - costBasis;
+
+  prev.textContent = `Receive ${fmt(cashOut)} · ${pl >= 0 ? '+' : ''}${fmt(pl)} vs. cost`;
+}
+
+function confirmSell(marketId) {
+  if (!currentUser) { showToast('Select your name first.', 'error'); return; }
+  const market = state.markets.find(m => m.id === marketId);
+  if (!market || market.resolved !== null) return;
+
+  const pct      = parseFloat(document.getElementById(`sellPct-${marketId}`).value) || 0;
+  if (pct <= 0)  { showToast('Choose how much to sell.', 'error'); return; }
+
+  const userBets       = state.bets.filter(b => b.marketId === marketId && b.userId === currentUser && b.payout === null);
+  const totalEffShares = userBets.reduce((s, b) => s + effShares(b), 0);
+  if (!userBets.length || totalEffShares <= 0) { showToast('No position to sell.', 'error'); return; }
+
+  const side         = userBets[0].side;
+  const sharesToSell = totalEffShares * (pct / 100);
+  const { cashOut, yr2, nr2 } = calcSell(market, side, sharesToSell);
+  if (cashOut <= 0) { showToast('Nothing to receive — position may be fully sold.', 'error'); return; }
+
+  // Update AMM reserves
+  market.yesReserve = yr2;
+  market.noReserve  = nr2;
+
+  // Distribute sold shares/amount/cashOut proportionally across bets
+  userBets.forEach(bet => {
+    const frac          = effShares(bet) / totalEffShares;
+    bet.soldShares      = (bet.soldShares  ?? 0) + sharesToSell      * frac;
+    bet.soldAmount      = (bet.soldAmount  ?? 0) + effAmount(bet)    * (pct / 100);
+    bet.soldCashOut     = (bet.soldCashOut ?? 0) + cashOut           * frac;
+  });
+
+  state.balances[currentUser] = (state.balances[currentUser] ?? sb()) + cashOut;
+
+  const odds = getMarketOdds(marketId);
+  if (!market.oddsHistory) market.oddsHistory = [];
+  market.oddsHistory.push({ t: Date.now(), yes: odds.yes, no: odds.no, volume: odds.total, bettor: `${currentUser} (sell)` });
+
+  saveState(state);
+  document.getElementById(`sell-slip-${marketId}`).style.display = 'none';
+  showToast(`Sold ${pct === 100 ? 'full position' : pct + '% of position'} · received ${fmt(cashOut)} 💰`);
+}
+
 // ── RESOLVE ───────────────────────────────────────────────
 function resolveMarket(marketId, winner) {
   const market  = state.markets.find(m => m.id === marketId);
@@ -725,23 +818,22 @@ function resolveMarket(marketId, winner) {
   const winBets  = bets.filter(b => b.side === winner);
   const loseBets = bets.filter(b => b.side !== winner);
 
-  // Prize pot = total money bet on the losing side
-  const loserPool  = loseBets.reduce((s, b) => s + b.amount, 0);
-  const winShares  = winBets.reduce((s, b) => s + (b.shares ?? b.amount), 0);
+  // Prize pot = effective money on the losing side (sold portions already cashed out)
+  const loserPool  = loseBets.reduce((s, b) => s + effAmount(b), 0);
+  const winShares  = winBets.reduce((s, b) => s + effShares(b), 0);
 
   if (winShares === 0) {
-    // Nobody bet on the winning side — refund everyone
+    // Nobody bet on the winning side — refund effective stake to everyone
     bets.forEach(bet => {
-      bet.payout = bet.amount;
-      state.balances[bet.userId] = (state.balances[bet.userId] ?? sb()) + bet.amount;
+      bet.payout = effAmount(bet);
+      state.balances[bet.userId] = (state.balances[bet.userId] ?? sb()) + bet.payout;
     });
   } else {
-    // Each winner gets their stake back + their proportional cut of the loser pool
-    // (weighted by shares — early/contrarian bettors earned more shares per dollar)
+    // Each winner gets their effective stake back + cut of loser pool (weighted by shares)
     const prizePerShare = loserPool / winShares;
     winBets.forEach(bet => {
-      const prize = (bet.shares ?? bet.amount) * prizePerShare;
-      bet.payout  = bet.amount + prize;          // always ≥ bet amount ✓
+      const prize = effShares(bet) * prizePerShare;
+      bet.payout  = effAmount(bet) + prize;     // always ≥ effective stake ✓
       state.balances[bet.userId] = (state.balances[bet.userId] ?? sb()) + bet.payout;
     });
     loseBets.forEach(bet => { bet.payout = 0; });
@@ -761,6 +853,7 @@ function unresolveMarket(marketId) {
   getUsers().forEach(f => { fresh[f.name] = sb(); });
   state.bets.forEach(bet => {
     fresh[bet.userId] = (fresh[bet.userId] ?? sb()) - bet.amount;
+    fresh[bet.userId] += (bet.soldCashOut ?? 0);          // cash already received from selling
     if (bet.payout != null && bet.payout > 0) fresh[bet.userId] += bet.payout;
   });
   state.balances = fresh;
@@ -780,9 +873,12 @@ function renderMarkets() {
 function renderMarketCard(m) {
   const odds     = getMarketOdds(m.id);
   const resolved = m.resolved !== null;
-  const userBets = currentUser ? state.bets.filter(b => b.marketId === m.id && b.userId === currentUser) : [];
-  const userYes  = userBets.filter(b => b.side === 'yes').reduce((s, b) => s + b.amount, 0);
-  const userNo   = userBets.filter(b => b.side === 'no' ).reduce((s, b) => s + b.amount, 0);
+  const userBets    = currentUser ? state.bets.filter(b => b.marketId === m.id && b.userId === currentUser) : [];
+  // Use effective (post-sell) amounts — fully-sold positions count as 0
+  const userYes     = userBets.filter(b => b.side === 'yes').reduce((s, b) => s + effAmount(b), 0);
+  const userNo      = userBets.filter(b => b.side === 'no' ).reduce((s, b) => s + effAmount(b), 0);
+  const userYesSh   = userBets.filter(b => b.side === 'yes').reduce((s, b) => s + effShares(b), 0);
+  const userNoSh    = userBets.filter(b => b.side === 'no' ).reduce((s, b) => s + effShares(b), 0);
   const badge    = resolved
     ? `<div class="resolved-badge ${m.resolved}-win">✓ ${m.resolved === 'yes' ? m.yesLabel : m.noLabel} Won</div>` : '';
 
@@ -822,8 +918,20 @@ function renderMarketCard(m) {
       <div class="stat"><div class="stat-label">Total Volume</div><div class="stat-value">${fmt(odds.total)}</div></div>
       <div class="stat"><div class="stat-label">${m.yesLabel} Pool</div><div class="stat-value" style="color:var(--yes)">${fmt(odds.yesTotal)}</div></div>
       <div class="stat"><div class="stat-label">${m.noLabel} Pool</div><div class="stat-value" style="color:var(--no)">${fmt(odds.noTotal)}</div></div>
-      ${userYes>0?`<div class="stat"><div class="stat-label">Your ${m.yesLabel}</div><div class="stat-value pos-yes">${fmt(userYes)}</div></div>`:''}
-      ${userNo >0?`<div class="stat"><div class="stat-label">Your ${m.noLabel}</div><div class="stat-value pos-no">${fmt(userNo)}</div></div>`:''}
+      ${userYes>0?`<div class="stat">
+        <div class="stat-label">Your ${m.yesLabel}</div>
+        <div class="stat-value pos-yes" style="display:flex;align-items:center;gap:8px">
+          ${fmt(userYes)}
+          ${!resolved?`<button class="quick-btn" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="toggleSellSlip(${m.id})">Sell</button>`:''}
+        </div>
+      </div>`:''}
+      ${userNo>0?`<div class="stat">
+        <div class="stat-label">Your ${m.noLabel}</div>
+        <div class="stat-value pos-no" style="display:flex;align-items:center;gap:8px">
+          ${fmt(userNo)}
+          ${!resolved?`<button class="quick-btn" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="toggleSellSlip(${m.id})">Sell</button>`:''}
+        </div>
+      </div>`:''}
     </div>
     <div class="bet-slip" id="slip-${m.id}" data-side="yes">
       <div class="bet-slip-title" id="slip-title-${m.id}">Place your bet</div>
@@ -835,6 +943,25 @@ function renderMarketCard(m) {
       <div class="payout-preview"></div>
       <button class="bet-confirm yes" id="confirmBtn-${m.id}" onclick="placeBet(${m.id})">Confirm Bet</button>
     </div>
+    ${(userYes > 0 || userNo > 0) && !resolved ? `
+    <div id="sell-slip-${m.id}" style="display:none;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:16px;margin-top:16px">
+      <div class="bet-slip-title">Sell Position — ${userYes > 0 ? m.yesLabel : m.noLabel}</div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
+        Selling returns your shares to the AMM pool at current market price. You may receive less than your original stake if odds moved against you.
+      </div>
+      <div class="quick-amounts">
+        ${[25,50,75,100].map(p=>`<button class="quick-btn" onclick="document.getElementById('sellPct-${m.id}').value=${p};updateSellPreview(${m.id})">${p}%</button>`).join('')}
+      </div>
+      <input type="range" min="1" max="100" value="100" id="sellPct-${m.id}"
+        oninput="updateSellPreview(${m.id})"
+        style="width:100%;margin:12px 0;accent-color:var(--accent)" />
+      <div class="payout-preview" id="sell-preview-${m.id}"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="bet-confirm" style="flex:1;background:var(--surface2);color:var(--muted);border:1px solid var(--border)"
+          onclick="document.getElementById('sell-slip-${m.id}').style.display='none'">Cancel</button>
+        <button class="bet-confirm yes" style="flex:1" onclick="confirmSell(${m.id})">Confirm Sell</button>
+      </div>
+    </div>` : ''}
   </div>`;
 }
 
