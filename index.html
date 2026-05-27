@@ -395,9 +395,10 @@ const FAMILY = [
 ];
 const STARTING_BALANCE = 1000;
 const ADMIN_PIN = '1234';
+const MARKET_LIQUIDITY = 100; // AMM initial virtual liquidity — higher = less price impact per bet
 const DEFAULT_MARKETS = [
-  { id:1, question:'Who gets married first — Chin or Sofia?', category:'Family', yesLabel:'Chin', noLabel:'Sofia', resolved:null, createdAt:Date.now(), oddsHistory:[] },
-  { id:2, question:'Will Nicholas be incarcerated?',          category:'Drama',  yesLabel:'Yes',  noLabel:'No',    resolved:null, createdAt:Date.now(), oddsHistory:[] },
+  { id:1, question:'Who gets married first — Chin or Sofia?', category:'Family', yesLabel:'Chin', noLabel:'Sofia', yesReserve:MARKET_LIQUIDITY, noReserve:MARKET_LIQUIDITY, resolved:null, createdAt:Date.now(), oddsHistory:[] },
+  { id:2, question:'Will Nicholas be incarcerated?',          category:'Drama',  yesLabel:'Yes',  noLabel:'No',    yesReserve:MARKET_LIQUIDITY, noReserve:MARKET_LIQUIDITY, resolved:null, createdAt:Date.now(), oddsHistory:[] },
 ];
 
 // ── STATE ─────────────────────────────────────────────────
@@ -469,8 +470,28 @@ ROOT.on('value', snap => {
     // Seed users into Firebase if missing (e.g. first load from old data)
     if (!Object.keys(state.users).length) {
       FAMILY.forEach(f => { state.users[f.name] = { name: f.name, avatar: f.avatar, type: 'family' }; });
-      saveState(state);
     }
+    // ── Migrate legacy markets to CPMM ────────────────────────
+    let needsMigration = false;
+    state.markets.forEach(m => {
+      if (m.yesReserve != null) return; // already migrated
+      needsMigration = true;
+      // Replay this market's bets chronologically to reconstruct reserves
+      let yr = MARKET_LIQUIDITY, nr = MARKET_LIQUIDITY;
+      const k = MARKET_LIQUIDITY * MARKET_LIQUIDITY;
+      const mBets = state.bets
+        .filter(b => b.marketId === m.id)
+        .sort((a, b) => a.placedAt - b.placedAt);
+      mBets.forEach(bet => {
+        const r = cpmm(yr, nr, k, bet.side, bet.amount);
+        bet.shares = bet.shares ?? r.shares; // backfill shares on legacy bets
+        yr = r.yr2; nr = r.nr2;
+      });
+      m.yesReserve = yr;
+      m.noReserve  = nr;
+    });
+    if (needsMigration) saveState(state);
+    // ─────────────────────────────────────────────────────────
     buildUserModal();
     if (!currentUser) openUserModal();
     else {
@@ -488,13 +509,33 @@ ROOT.on('value', snap => {
 // ── HELPERS ───────────────────────────────────────────────
 function getMarketBets(marketId) { return state.bets.filter(b => b.marketId === marketId); }
 
+// ── CPMM helpers ─────────────────────────────────────────────
+// Returns current AMM reserves for a market, defaulting to initial liquidity
+function res(market) {
+  const yr = market.yesReserve ?? MARKET_LIQUIDITY;
+  const nr = market.noReserve  ?? MARKET_LIQUIDITY;
+  return { yr, nr, k: yr * nr };
+}
+
+// Shares received when buying `side` with `amount` dollars given current reserves
+function cpmm(yr, nr, k, side, amount) {
+  if (side === 'yes') { const nr2 = nr + amount; return { shares: yr - k/nr2, yr2: k/nr2, nr2 }; }
+  else                { const yr2 = yr + amount; return { shares: nr - k/yr2, yr2, nr2: k/yr2 }; }
+}
+
 function getMarketOdds(marketId) {
-  const bets     = getMarketBets(marketId);
+  const market  = state.markets.find(m => m.id === marketId);
+  const bets    = getMarketBets(marketId);
   const yesTotal = bets.filter(b => b.side === 'yes').reduce((s, b) => s + b.amount, 0);
   const noTotal  = bets.filter(b => b.side === 'no' ).reduce((s, b) => s + b.amount, 0);
   const total    = yesTotal + noTotal;
-  if (total === 0) return { yes:50, no:50, yesTotal:0, noTotal:0, total:0 };
-  return { yes: Math.round(yesTotal/total*100), no: Math.round(noTotal/total*100), yesTotal, noTotal, total };
+  if (!market)   return { yes:50, no:50, yesTotal:0, noTotal:0, total:0 };
+  const { yr, nr } = res(market);
+  return {
+    yes: Math.round(nr / (yr + nr) * 100),
+    no:  Math.round(yr / (yr + nr) * 100),
+    yesTotal, noTotal, total
+  };
 }
 
 function getUserBalance(u) { return state.balances[u] ?? sb(); }
@@ -614,12 +655,17 @@ function updatePayoutPreview(marketId) {
   const input  = slip.querySelector('input[type=number]');
   const amount = parseFloat(input.value) || 0;
   const side   = slip.dataset.side;
-  const odds   = getMarketOdds(marketId);
+  const market = state.markets.find(m => m.id === marketId);
   const prev   = slip.querySelector('.payout-preview');
-  if (amount > 0) {
-    const sidePool = (side === 'yes' ? odds.yesTotal : odds.noTotal) + amount;
-    const payout   = (amount / sidePool) * (odds.total + amount);
-    prev.textContent = `Potential payout: ${fmt(payout)}  (${fmt(payout - amount)} profit)`;
+  if (amount > 0 && market) {
+    const { yr, nr, k } = res(market);
+    const { shares } = cpmm(yr, nr, k, side, amount);
+    const bets = getMarketBets(marketId);
+    const totalPool = bets.reduce((s, b) => s + b.amount, 0) + amount;
+    const existShares = bets.filter(b => b.side === side).reduce((s, b) => s + (b.shares ?? b.amount), 0);
+    const totalWinShares = existShares + shares;
+    const payout = totalPool * shares / totalWinShares;
+    prev.textContent = `~${shares.toFixed(1)} shares · Est. payout if correct: ${fmt(payout)}  (${fmt(payout - amount)} profit)`;
   } else { prev.textContent = ''; }
 }
 
@@ -636,13 +682,18 @@ function placeBet(marketId) {
   if (!amount || amount < 1)    { showToast('Minimum bet is $1.', 'error'); return; }
   if (amount > getUserBalance(currentUser)) { showToast('Not enough balance!', 'error'); return; }
 
-  // Place bet
-  const bet = { id: Date.now(), userId: currentUser, marketId, side, amount, placedAt: Date.now(), payout: null };
+  // ── CPMM: calculate shares and update reserves ──
+  const { yr, nr, k } = res(market);
+  const { shares, yr2, nr2 } = cpmm(yr, nr, k, side, amount);
+  market.yesReserve = yr2;
+  market.noReserve  = nr2;
+
+  const bet = { id: Date.now(), userId: currentUser, marketId, side, amount, shares, placedAt: Date.now(), payout: null };
   state.bets.push(bet);
   state.balances[currentUser] = (state.balances[currentUser] ?? sb()) - amount;
 
-  // Record odds snapshot for charts AFTER this bet
-  const odds = getMarketOdds(marketId); // computed from updated state.bets
+  // Record odds snapshot for charts AFTER this bet (uses updated reserves)
+  const odds = getMarketOdds(marketId);
   if (!market.oddsHistory) market.oddsHistory = [];
   market.oddsHistory.push({ t: Date.now(), yes: odds.yes, no: odds.no, volume: odds.total, bettor: currentUser });
 
@@ -658,16 +709,26 @@ function resolveMarket(marketId, winner) {
   const market  = state.markets.find(m => m.id === marketId);
   if (!market)  return;
   market.resolved = winner;
-  const bets    = getMarketBets(marketId);
-  const winners = bets.filter(b => b.side === winner);
-  const losers  = bets.filter(b => b.side !== winner);
-  const losePot = losers.reduce((s, b) => s + b.amount, 0);
-  const winPot  = winners.reduce((s, b) => s + b.amount, 0);
-  winners.forEach(bet => {
-    bet.payout = bet.amount + (winPot > 0 ? bet.amount / winPot : 0) * losePot;
-    state.balances[bet.userId] = (state.balances[bet.userId] ?? sb()) + bet.payout;
-  });
-  losers.forEach(bet => { bet.payout = 0; });
+  const bets      = getMarketBets(marketId);
+  const winBets   = bets.filter(b => b.side === winner);
+  const loseBets  = bets.filter(b => b.side !== winner);
+  const totalPool = bets.reduce((s, b) => s + b.amount, 0);
+  const winShares = winBets.reduce((s, b) => s + (b.shares ?? b.amount), 0);
+
+  if (winShares === 0) {
+    // Nobody bet on the winning side — refund everyone
+    bets.forEach(bet => {
+      bet.payout = bet.amount;
+      state.balances[bet.userId] = (state.balances[bet.userId] ?? sb()) + bet.amount;
+    });
+  } else {
+    const payoutPerShare = totalPool / winShares;
+    winBets.forEach(bet => {
+      bet.payout = (bet.shares ?? bet.amount) * payoutPerShare;
+      state.balances[bet.userId] = (state.balances[bet.userId] ?? sb()) + bet.payout;
+    });
+    loseBets.forEach(bet => { bet.payout = 0; });
+  }
   saveState(state);
   const winLabel = winner === 'yes' ? market.yesLabel : market.noLabel;
   showToast(`Resolved: ${winLabel} wins! Payouts sent 🎉`);
@@ -678,21 +739,12 @@ function unresolveMarket(marketId) {
   if (!market || market.resolved === null) return;
   market.resolved = null;
   state.bets.filter(b => b.marketId === marketId).forEach(b => { b.payout = null; });
+  // Rebuild balances from scratch using stored payouts (works for both CPMM and legacy)
   const fresh = {};
   getUsers().forEach(f => { fresh[f.name] = sb(); });
-  state.markets.forEach(m => {
-    if (m.id === marketId || m.resolved === null) return;
-    const mBets    = state.bets.filter(b => b.marketId === m.id);
-    const mWinners = mBets.filter(b => b.side === m.resolved);
-    const mLosers  = mBets.filter(b => b.side !== m.resolved);
-    const winPot   = mWinners.reduce((s, b) => s + b.amount, 0);
-    const losePot  = mLosers.reduce((s, b) => s + b.amount, 0);
-    mWinners.forEach(bet => { bet.payout = bet.amount + (winPot > 0 ? bet.amount/winPot : 0) * losePot; });
-    mLosers.forEach(bet  => { bet.payout = 0; });
-  });
   state.bets.forEach(bet => {
     fresh[bet.userId] = (fresh[bet.userId] ?? sb()) - bet.amount;
-    if (bet.payout > 0) fresh[bet.userId] += bet.payout;
+    if (bet.payout != null && bet.payout > 0) fresh[bet.userId] += bet.payout;
   });
   state.balances = fresh;
   saveState(state);
@@ -1057,7 +1109,7 @@ function createMarket() {
     if (!yesLabel || !noLabel) { showToast('Enter both option labels.', 'error'); return; }
   }
   const newId = Math.max(0, ...state.markets.map(m => m.id)) + 1;
-  state.markets.push({ id:newId, question, category, yesLabel, noLabel, resolved:null, createdAt:Date.now(), oddsHistory:[] });
+  state.markets.push({ id:newId, question, category, yesLabel, noLabel, yesReserve:MARKET_LIQUIDITY, noReserve:MARKET_LIQUIDITY, resolved:null, createdAt:Date.now(), oddsHistory:[] });
   saveState(state);
   document.getElementById('newQuestion').value = '';
   document.getElementById('newCategory').value = '';
@@ -1070,7 +1122,7 @@ function createMarket() {
 
 function resetAll() {
   if (!confirm(`Reset EVERYTHING? All bets deleted, balances back to ${fmt(sb())}.`)) return;
-  const fresh = { markets: DEFAULT_MARKETS.map(m => ({ ...m, resolved:null, oddsHistory:[] })), bets:[], balances:{}, users: state.users || {}, config: state.config || {} };
+  const fresh = { markets: DEFAULT_MARKETS.map(m => ({ ...m, yesReserve:MARKET_LIQUIDITY, noReserve:MARKET_LIQUIDITY, resolved:null, oddsHistory:[] })), bets:[], balances:{}, users: state.users || {}, config: state.config || {} };
   getUsers().forEach(f => { fresh.balances[f.name] = sb(); });
   state = fresh;
   saveState(state);
