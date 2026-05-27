@@ -344,9 +344,22 @@
           <div id="adminMarkets"></div>
         </div>
 
+        <div class="admin-card">
+          <h3>Settings</h3>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <div style="flex:1;min-width:160px">
+              <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">STARTING BALANCE PER PLAYER</label>
+              <input class="bet-input" type="number" id="startingBalInput" min="1" step="1" placeholder="e.g. 1000" style="width:100%"
+                onkeydown="if(event.key==='Enter')saveStartingBalance()" />
+            </div>
+            <button class="resolve-btn yes" style="margin-top:18px" onclick="saveStartingBalance()">Save</button>
+          </div>
+          <p style="color:var(--muted);font-size:12px;margin-top:10px">Current: <strong id="currentSbLabel"></strong> — only affects new players and future resets.</p>
+        </div>
+
         <div class="admin-card" style="border-color:#3d1a1a">
           <h3 style="color:var(--no)">Danger Zone</h3>
-          <p style="color:var(--muted);font-size:13px;margin-bottom:16px">Wipe all bets and reset everyone to $1,000. Cannot be undone.</p>
+          <p style="color:var(--muted);font-size:13px;margin-bottom:16px">Wipe all bets and reset everyone's balance. Cannot be undone.</p>
           <button class="resolve-btn no" onclick="resetAll()">Reset All Data</button>
         </div>
 
@@ -413,21 +426,22 @@ function serialize(s) {
     }
     marketsObj[m.id] = mc;
   });
-  return { markets: marketsObj, bets: betsObj, balances: s.balances || {}, users: s.users || {} };
+  return { markets: marketsObj, bets: betsObj, balances: s.balances || {}, users: s.users || {}, config: s.config || {} };
 }
 
 function deserialize(raw) {
   const markets = Object.values(raw.markets || {})
-    .map(m => ({ ...m, oddsHistory: Object.values(m.oddsHistory || {}) }))
+    // Firebase strips null — restore it so resolved/payout checks work correctly
+    .map(m => ({ ...m, resolved: m.resolved ?? null, oddsHistory: Object.values(m.oddsHistory || {}) }))
     .sort((a, b) => a.id - b.id);
-  const bets = Object.values(raw.bets || {});
-  return { markets, bets, balances: raw.balances || {}, users: raw.users || {} };
+  const bets = Object.values(raw.bets || {}).map(b => ({ ...b, payout: b.payout ?? null }));
+  return { markets, bets, balances: raw.balances || {}, users: raw.users || {}, config: raw.config || {} };
 }
 
 function saveState(s) { ROOT.set(serialize(s)); }
 
 function initDB() {
-  const init = { markets: DEFAULT_MARKETS, bets: [], balances: {}, users: {} };
+  const init = { markets: DEFAULT_MARKETS, bets: [], balances: {}, users: {}, config: { startingBalance: STARTING_BALANCE } };
   FAMILY.forEach(f => {
     init.balances[f.name] = STARTING_BALANCE;
     init.users[f.name] = { name: f.name, avatar: f.avatar, type: 'family' };
@@ -439,6 +453,9 @@ function getUsers() {
   if (state && state.users && Object.keys(state.users).length) return Object.values(state.users);
   return FAMILY;
 }
+
+// Live starting balance — falls back to the hardcoded constant if config not yet in Firebase
+function sb() { return (state && state.config && state.config.startingBalance) || STARTING_BALANCE; }
 
 // ── REAL-TIME LISTENER ────────────────────────────────────
 ROOT.on('value', snap => {
@@ -480,7 +497,7 @@ function getMarketOdds(marketId) {
   return { yes: Math.round(yesTotal/total*100), no: Math.round(noTotal/total*100), yesTotal, noTotal, total };
 }
 
-function getUserBalance(u) { return state.balances[u] ?? STARTING_BALANCE; }
+function getUserBalance(u) { return state.balances[u] ?? sb(); }
 
 function fmt(n) { return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits:0 }); }
 
@@ -539,11 +556,11 @@ function submitGuestReg() {
   const name = raw.charAt(0).toUpperCase() + raw.slice(1);
   if (state.users[name]) { selectUser(name); return; }
   state.users[name] = { name, avatar: '🙂', type: 'guest' };
-  if (!(name in state.balances)) state.balances[name] = STARTING_BALANCE;
+  if (!(name in state.balances)) state.balances[name] = sb();
   saveState(state);
   buildUserModal();
   selectUser(name);
-  showToast(`Welcome, ${name}! You start with ${fmt(STARTING_BALANCE)}.`);
+  showToast(`Welcome, ${name}! You start with ${fmt(sb())}.`);
 }
 
 // ── TABS ──────────────────────────────────────────────────
@@ -622,7 +639,7 @@ function placeBet(marketId) {
   // Place bet
   const bet = { id: Date.now(), userId: currentUser, marketId, side, amount, placedAt: Date.now(), payout: null };
   state.bets.push(bet);
-  state.balances[currentUser] = (state.balances[currentUser] ?? STARTING_BALANCE) - amount;
+  state.balances[currentUser] = (state.balances[currentUser] ?? sb()) - amount;
 
   // Record odds snapshot for charts AFTER this bet
   const odds = getMarketOdds(marketId); // computed from updated state.bets
@@ -648,7 +665,7 @@ function resolveMarket(marketId, winner) {
   const winPot  = winners.reduce((s, b) => s + b.amount, 0);
   winners.forEach(bet => {
     bet.payout = bet.amount + (winPot > 0 ? bet.amount / winPot : 0) * losePot;
-    state.balances[bet.userId] = (state.balances[bet.userId] ?? STARTING_BALANCE) + bet.payout;
+    state.balances[bet.userId] = (state.balances[bet.userId] ?? sb()) + bet.payout;
   });
   losers.forEach(bet => { bet.payout = 0; });
   saveState(state);
@@ -662,7 +679,7 @@ function unresolveMarket(marketId) {
   market.resolved = null;
   state.bets.filter(b => b.marketId === marketId).forEach(b => { b.payout = null; });
   const fresh = {};
-  getUsers().forEach(f => { fresh[f.name] = STARTING_BALANCE; });
+  getUsers().forEach(f => { fresh[f.name] = sb(); });
   state.markets.forEach(m => {
     if (m.id === marketId || m.resolved === null) return;
     const mBets    = state.bets.filter(b => b.marketId === m.id);
@@ -674,7 +691,7 @@ function unresolveMarket(marketId) {
     mLosers.forEach(bet  => { bet.payout = 0; });
   });
   state.bets.forEach(bet => {
-    fresh[bet.userId] = (fresh[bet.userId] ?? STARTING_BALANCE) - bet.amount;
+    fresh[bet.userId] = (fresh[bet.userId] ?? sb()) - bet.amount;
     if (bet.payout > 0) fresh[bet.userId] += bet.payout;
   });
   state.balances = fresh;
@@ -877,7 +894,7 @@ function renderVolumeChart() {
 
 function renderPnlChart() {
   destroyChart('pnlChart');
-  const entries = getUsers().map(f => ({ name: f.name, pnl: getUserBalance(f.name) - STARTING_BALANCE }));
+  const entries = getUsers().map(f => ({ name: f.name, pnl: getUserBalance(f.name) - sb() }));
   const colors  = entries.map(e => e.pnl >= 0 ? 'rgba(0,200,83,.75)' : 'rgba(244,67,54,.75)');
 
   chartInstances['pnlChart'] = new Chart(document.getElementById('pnlChart'), {
@@ -998,7 +1015,7 @@ function renderPortfolio() {
 
 // ── LEADERBOARD ───────────────────────────────────────────
 function renderLeaderboard() {
-  const entries = getUsers().map(f => ({ ...f, balance: getUserBalance(f.name), pnl: getUserBalance(f.name) - STARTING_BALANCE }))
+  const entries = getUsers().map(f => ({ ...f, balance: getUserBalance(f.name), pnl: getUserBalance(f.name) - sb() }))
     .sort((a, b) => b.balance - a.balance);
   const rankCls   = ['gold','silver','bronze'];
   const rankEmoji = ['🥇','🥈','🥉'];
@@ -1052,9 +1069,9 @@ function createMarket() {
 }
 
 function resetAll() {
-  if (!confirm('Reset EVERYTHING? All bets deleted, balances back to $1,000.')) return;
-  const fresh = { markets: DEFAULT_MARKETS.map(m => ({ ...m, resolved:null, oddsHistory:[] })), bets:[], balances:{}, users: state.users || {} };
-  getUsers().forEach(f => { fresh.balances[f.name] = STARTING_BALANCE; });
+  if (!confirm(`Reset EVERYTHING? All bets deleted, balances back to ${fmt(sb())}.`)) return;
+  const fresh = { markets: DEFAULT_MARKETS.map(m => ({ ...m, resolved:null, oddsHistory:[] })), bets:[], balances:{}, users: state.users || {}, config: state.config || {} };
+  getUsers().forEach(f => { fresh.balances[f.name] = sb(); });
   state = fresh;
   saveState(state);
   showToast('All data reset. Fresh start!');
@@ -1101,6 +1118,9 @@ function renderAdmin() {
     const inp = document.getElementById(`edit-title-${editingMarketId}`);
     if (inp) { inp.focus(); inp.select(); }
   }
+
+  const lbl = document.getElementById('currentSbLabel');
+  if (lbl) lbl.textContent = fmt(sb());
 }
 
 function startEditMarket(id) {
@@ -1110,6 +1130,18 @@ function startEditMarket(id) {
 
 function cancelMarketEdit() {
   editingMarketId = null;
+  renderAdmin();
+}
+
+function saveStartingBalance() {
+  const inp = document.getElementById('startingBalInput');
+  const val = parseInt(inp.value, 10);
+  if (!val || val < 1) { showToast('Enter a valid amount.', 'error'); return; }
+  if (!state.config) state.config = {};
+  state.config.startingBalance = val;
+  saveState(state);
+  inp.value = '';
+  showToast(`Starting balance set to ${fmt(val)} ✓`);
   renderAdmin();
 }
 
